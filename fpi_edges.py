@@ -226,3 +226,34 @@ def build_rows(games, fpi, kal_events, poly):
                 kalshi_ask=ask, kalshi_edge=k_edge, poly_price=pp, poly_edge=p_edge,
                 best=max(edges) if edges else None))
     return sorted(rows, key=lambda r: -(r["best"] if r["best"] is not None else -9))
+ from datetime import timedelta
+
+
+def espn_games(league, start, end):
+    cfg = LEAGUES[league]
+    url = ESPN_SITE.format(lg=cfg["espn"]) + "/scoreboard"
+    days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    errors = []
+
+    def one_day(d):
+        for extra in ({**cfg["extra"], "limit": 300}, cfg["extra"], {}):
+            try:
+                return _get(url, dates=f"{d:%Y%m%d}", **extra).get("events", [])
+            except Exception as e:
+                errors.append(str(e))
+        return []
+
+    with ThreadPoolExecutor(6) as ex:
+        events = [e for chunk in ex.map(one_day, days) for e in chunk]
+    if not events and errors:
+        raise RuntimeError(errors[-1])
+    games, seen = [], set()
+    for e in events:
+        if e["id"] in seen or e.get("status", {}).get("type", {}).get("state") != "pre":
+            continue
+        seen.add(e["id"])
+        sides = {c["homeAway"]: c["team"] for c in e["competitions"][0]["competitors"]}
+        if "home" in sides and "away" in sides:
+            games.append(dict(id=e["id"], date=e.get("date", ""), home=sides["home"], away=sides["away"]))
+    return games
+ 
