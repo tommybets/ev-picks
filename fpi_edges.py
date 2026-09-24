@@ -226,7 +226,7 @@ def build_rows(games, fpi, kal_events, poly):
                 kalshi_ask=ask, kalshi_edge=k_edge, poly_price=pp, poly_edge=p_edge,
                 best=max(edges) if edges else None))
     return sorted(rows, key=lambda r: -(r["best"] if r["best"] is not None else -9))
- from datetime import timedelta
+from datetime import timedelta
 
 
 def espn_games(league, start, end):
