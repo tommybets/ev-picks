@@ -25,17 +25,33 @@ def format_kickoff(iso_str):
     except (ValueError, TypeError):
         return iso_str
 
-ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/{lg}"
-ESPN_CORE = ("https://sports.core.api.espn.com/v2/sports/football/leagues/{lg}"
+ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/{sport}/{lg}"
+ESPN_CORE = ("https://sports.core.api.espn.com/v2/sports/{sport}/leagues/{lg}"
              "/events/{eid}/competitions/{eid}/predictor")
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2/events"
 GAMMA = "https://gamma-api.polymarket.com"
 NO_UA = {"User-Agent": None}  # ESPN 403s custom User-Agents from datacenter IPs
 
+# "espn_sport" is the sport segment in ESPN's URLs (e.g. "basketball"),
+# "espn" is the league segment (e.g. "nba") — they're separate because
+# ESPN nests league under sport rather than using one combined slug.
+# nfelo-style win-probability data ("gameProjection") is ESPN's FPI for
+# football and BPI for basketball; MLB/NHL don't always have an equivalent
+# published, so those may show fewer "With FPI" games — that's expected,
+# not a bug, and the rest of the comparison still works off whatever ESPN
+# does return.
 LEAGUES = {
-    "NFL": dict(espn="nfl", kalshi="KXNFLGAME", poly=("nfl",), extra={}),
-    "College football": dict(espn="college-football", kalshi="KXNCAAFGAME",
-                             poly=("cfb", "ncaaf"), extra={"groups": "80"}),
+    "NFL": dict(espn_sport="football", espn="nfl", kalshi="KXNFLGAME",
+               poly=("nfl",), extra={}),
+    "College football": dict(espn_sport="football", espn="college-football",
+                             kalshi="KXNCAAFGAME", poly=("cfb", "ncaaf"),
+                             extra={"groups": "80"}),
+    "NBA": dict(espn_sport="basketball", espn="nba", kalshi="KXNBAGAME",
+               poly=("nba",), extra={}),
+    "NHL": dict(espn_sport="hockey", espn="nhl", kalshi="KXNHLGAME",
+               poly=("nhl",), extra={}),
+    "MLB": dict(espn_sport="baseball", espn="mlb", kalshi="KXMLBGAME",
+               poly=("mlb",), extra={}),
 }
 
 
@@ -56,18 +72,8 @@ def to_prob(x):
 
 
 # ---------- ESPN ----------
-def espn_games(league, start, end):
-    cfg = LEAGUES[league]
-    d = _get(ESPN_SITE.format(lg=cfg["espn"]) + "/scoreboard",
-             dates=f"{start:%Y%m%d}-{end:%Y%m%d}", limit=300, **cfg["extra"])
-    games = []
-    for e in d.get("events", []):
-        if e.get("status", {}).get("type", {}).get("state") != "pre":
-            continue
-        sides = {c["homeAway"]: c["team"] for c in e["competitions"][0]["competitors"]}
-        if "home" in sides and "away" in sides:
-            games.append(dict(id=e["id"], date=e.get("date", ""), home=sides["home"], away=sides["away"]))
-    return games
+# (espn_games is defined once, further down, with a day-by-day fallback —
+# ESPN sometimes rejects a combined date-range request depending on sport.)
 
 
 def _stat(side):
@@ -86,9 +92,10 @@ def _proj(pred):
 
 
 def fpi_home_prob(league, eid):
-    lg = LEAGUES[league]["espn"]
-    tries = [lambda: _get(ESPN_CORE.format(lg=lg, eid=eid)),
-             lambda: _get(ESPN_SITE.format(lg=lg) + "/summary", event=eid).get("predictor", {})]
+    cfg = LEAGUES[league]
+    lg, sport = cfg["espn"], cfg["espn_sport"]
+    tries = [lambda: _get(ESPN_CORE.format(sport=sport, lg=lg, eid=eid)),
+             lambda: _get(ESPN_SITE.format(sport=sport, lg=lg) + "/summary", event=eid).get("predictor", {})]
     for t in tries:
         try:
             p = _proj(t())
@@ -252,7 +259,7 @@ from datetime import timedelta
 
 def espn_games(league, start, end):
     cfg = LEAGUES[league]
-    url = ESPN_SITE.format(lg=cfg["espn"]) + "/scoreboard"
+    url = ESPN_SITE.format(sport=cfg["espn_sport"], lg=cfg["espn"]) + "/scoreboard"
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     errors = []
 
@@ -277,4 +284,3 @@ def espn_games(league, start, end):
         if "home" in sides and "away" in sides:
             games.append(dict(id=e["id"], date=e.get("date", ""), home=sides["home"], away=sides["away"]))
     return games
- 
