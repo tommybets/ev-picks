@@ -2,8 +2,28 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
+
+_ET = ZoneInfo("America/New_York")
+
+
+def format_kickoff(iso_str):
+    """ESPN gives kickoff times as UTC ISO strings (e.g. '2026-09-28T17:00Z').
+    Converts to Eastern time — the standard convention for NFL scheduling —
+    and formats as 'Sun, Sep 28 · 1:00 PM ET'. Falls back to the raw string
+    if it doesn't parse, rather than failing the whole page."""
+    if not iso_str:
+        return "Time TBD"
+    try:
+        s = iso_str.replace("Z", "+00:00")
+        dt_utc = datetime.fromisoformat(s)
+        dt_et = dt_utc.astimezone(_ET)
+        return dt_et.strftime("%a, %b %-d · %-I:%M %p ET")
+    except (ValueError, TypeError):
+        return iso_str
 
 ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/{lg}"
 ESPN_CORE = ("https://sports.core.api.espn.com/v2/sports/football/leagues/{lg}"
@@ -226,6 +246,7 @@ def build_rows(games, fpi, kal_events, poly):
                 kalshi_ask=ask, kalshi_edge=k_edge, poly_price=pp, poly_edge=p_edge,
                 best=max(edges) if edges else None))
     return sorted(rows, key=lambda r: -(r["best"] if r["best"] is not None else -9))
+
 from datetime import timedelta
 
 
