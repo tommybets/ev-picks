@@ -12,7 +12,7 @@ from datetime import datetime
 
 import requests
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TailwindBets/1.0)"}
+HEADERS = {"User-Agent": None}
 TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
 TEAM_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{id}?enable=injuries"
 
