@@ -78,11 +78,12 @@ if rows is not None:
                 st.markdown(f"Kalshi ask **{r['kalshi_ask']*100:.0f}¢** → net edge **{r['kalshi_edge']*100:+.1f} pts** (after est. fee)")
             if r["poly_price"]:
                 st.markdown(f"Polymarket **{r['poly_price']*100:.0f}¢** → gap **{r['poly_edge']*100:+.1f} pts**")
-            st.caption(r["kickoff"])
+            st.caption(fe.format_kickoff(r["kickoff"]))
 
     with st.expander("All games"):
         df = pd.DataFrame(rows)
         if not df.empty:
+            df["kickoff"] = df["kickoff"].apply(fe.format_kickoff)
             for c in ("fpi", "kalshi_ask", "kalshi_edge", "poly_price", "poly_edge", "best"):
                 df[c] = (df[c] * 100).round(1)
             st.dataframe(df, use_container_width=True, hide_index=True)
