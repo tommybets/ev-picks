@@ -2,9 +2,44 @@ import pandas as pd
 import requests
 import streamlit as st
 from ev_picks import fetch, find_picks, log_picks
+import daily_parlay as dp
 
 st.set_page_config(page_title="EV Picks", page_icon="🎯", layout="centered")
 st.title("🎯 Daily +EV Picks")
+
+# ---------- posted daily parlay ----------
+# Cached for 6h and shared by every visitor to this app, so it acts as a
+# single "posted" pick of the day rather than something each user builds.
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _posted_parlay():
+    try:
+        return dp.build_parlay(100.0, "NFL")
+    except Exception as e:
+        return {"error": str(e)}
+
+with st.container(border=True):
+    st.subheader("📌 Today's Posted Parlay")
+    st.caption("Auto-built from the two best FPI-vs-market edges (Kalshi/Polymarket) on the "
+               "next available NFL slate. Refreshes every 6 hours for everyone viewing this app.")
+    parlay = _posted_parlay()
+    if not parlay:
+        st.info("No slate with two priced edges found in the next 10 days.")
+    elif "error" in parlay:
+        st.warning(f"Couldn't build today's parlay: {parlay['error']}")
+    else:
+        st.markdown(f"**Slate: {parlay['date']}**")
+        for i, leg in enumerate(parlay["legs"], 1):
+            st.markdown(f"**Leg {i}: {leg['team']}** · {leg['game']}  \n"
+                        f"{leg['book']} @ {leg['price']*100:.0f}¢ "
+                        f"(decimal {leg['decimal_odds']:.2f}) · FPI {leg['fpi']*100:.1f}% · "
+                        f"edge {leg['edge']*100:+.1f} pts")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("$100 payout", f"${parlay['payout']:.2f}")
+        c2.metric("Profit if won", f"${parlay['profit']:.2f}")
+        c3.metric("EV", f"${parlay['ev']:+.2f} ({parlay['ev_pct']*100:+.1f}%)")
+        st.caption("EV assumes the two legs are independent and uses FPI as the 'fair' "
+                   "probability for each leg. A parlay concentrates risk — a $100 stake "
+                   "here can lose in full even if each leg looked like a good single bet.")
 
 try:
     default_key = st.secrets.get("ODDS_API_KEY", "")
