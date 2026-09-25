@@ -74,7 +74,7 @@ for df in pd.read_html(io.StringIO(html)):
                 if team in TEAM_ABBRS and rating and rating > 800:
                     out[team] = rating
             if len(out) >= 20:
-                return out
+    return out
 
     data = _next_data(html)
     out = {}
