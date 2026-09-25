@@ -14,7 +14,9 @@ import requests
 
 HEADERS = {"User-Agent": None}
 TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-TEAM_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{id}?enable=injuries"
+# The "core" API only returns bare {"$ref": ...} pointers for each injury;
+# each one has to be fetched separately to get the actual player/status.
+INJURIES_URL = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{id}/injuries"
 
 # Rough Elo-point equivalents (~25 Elo ≈ 1 point of spread)
 QB_STATUS_PENALTY = {
@@ -95,23 +97,43 @@ def _position(d):
     return ""
 
 
+def _resolve(obj, depth=0):
+    """The core API returns bare {"$ref": url} pointers in a couple of
+    places (each injury, and each injury's athlete) instead of embedding
+    the data directly. Follow up to 2 hops to get the real content."""
+    if depth > 2:
+        return obj
+    if isinstance(obj, dict) and set(obj.keys()) <= {"$ref"} and "$ref" in obj:
+        try:
+            return _get(obj["$ref"])
+        except Exception:
+            return obj
+    return obj
+
+
 def team_injuries(espn_id):
     """Returns [{name, position, status}, ...] for one team. Best-effort:
     returns [] if ESPN's response shape doesn't match (rather than raising),
     since this is a secondary signal, not the core of the tool."""
     try:
-        data = _get(TEAM_URL.format(id=espn_id))
+        listing = _get(INJURIES_URL.format(id=espn_id))
     except Exception:
         return []
+    items = listing.get("items", []) if isinstance(listing, dict) else []
+
     out, seen = [], set()
-    for d in _walk(data):
-        if "athlete" not in d and "displayName" not in d and "position" not in d:
+    for item in items:
+        record = _resolve(item)
+        if not isinstance(record, dict):
             continue
-        status = _status_text(d)
+        if "athlete" in record:
+            record = dict(record)  # don't mutate the fetched object
+            record["athlete"] = _resolve(record["athlete"], depth=1)
+        status = _status_text(record)
         if status not in ("out", "doubtful", "questionable", "injured reserve", "ir", "pup"):
             continue
-        name = _player_name(d)
-        pos = _position(d)
+        name = _player_name(record)
+        pos = _position(record)
         if not name or (name, pos) in seen:
             continue
         seen.add((name, pos))
