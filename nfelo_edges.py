@@ -56,7 +56,8 @@ def _num(x):
 
 
 # ---------- power ratings ----------
-def power_ratings():
+for df in pd.read_html(io.StringIO(html)):
+
     """Returns {team_abbr: nfelo_rating}. Tries an HTML table first, then
     falls back to scanning the page's embedded JSON."""
     html = _fetch(POWER_URL)
@@ -93,7 +94,8 @@ def elo_win_prob(home_elo, away_elo, hfa=55.0):
 
 
 # ---------- nfelo's own EV bets page ----------
-def ev_bets():
+for df in pd.read_html(io.StringIO(html)):
+
     """Returns a list of nfelo's own flagged +EV sides:
     [{team, opponent, spread, ev}, ...]. Best-effort parse; may return []
     if nfelo changes their page layout."""
