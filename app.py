@@ -3,9 +3,56 @@ import requests
 import streamlit as st
 from ev_picks import fetch, find_picks, log_picks
 import daily_parlay as dp
+import daily_single_pick as dsp
+import results_db as db
 
 st.set_page_config(page_title="EV Picks", page_icon="🎯", layout="centered")
 st.title("🎯 Daily +EV Picks")
+
+# ---------- posted single pick ----------
+# Same 6h shared cache as the parlay below: one posted pick per app instance,
+# not something each visitor regenerates for themselves.
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _posted_single_pick():
+    try:
+        return dsp.best_single_pick(100.0, "NFL")
+    except Exception as e:
+        return {"error": str(e)}
+
+with st.container(border=True):
+    st.subheader("🎯 Today's Top Pick")
+    st.caption("The single side on the next NFL slate the model both favors to win and "
+               "sees positive EV on — prioritizes being a real favorite over chasing the "
+               "single biggest (often riskier, lower win-probability) edge.")
+    pick = _posted_single_pick()
+    if not pick:
+        st.info("No positive-edge game found on the next available NFL slate.")
+    elif "error" in pick:
+        st.warning(f"Couldn't build today's pick: {pick['error']}")
+    else:
+        st.markdown(f"**Slate: {pick['date']}**")
+        st.markdown(f"**{pick['team']}** · {pick['game']}  \n"
+                    f"{pick['book']} @ {pick['price']*100:.0f}¢ (decimal {pick['decimal_odds']:.2f}) · "
+                    f"model win prob **{pick['model_wp']*100:.1f}%** ({pick['confidence']}) · "
+                    f"edge {pick['edge']*100:+.1f} pts")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("$100 payout", f"${pick['payout']:.2f}")
+        c2.metric("Profit if won", f"${pick['profit']:.2f}")
+        c3.metric("EV", f"${pick['ev']:+.2f} ({pick['ev_pct']*100:+.1f}%)")
+        st.caption("A single favored side still isn't a sure thing — even a 65%+ model "
+                   "win probability means a meaningful chance of losing the full stake.")
+        if db.configured():
+            if st.button("📌 Log this pick", use_container_width=True, key="log_single_pick"):
+                try:
+                    db.log_bet(
+                        game=pick["game"], team=pick["team"], market="prediction_market",
+                        book=pick["book"], odds=pick["decimal_odds"], stake=pick["stake"],
+                        model_prob=pick["model_wp"], source="daily_single_pick",
+                        notes=f"{pick['confidence']}, edge {pick['edge']*100:+.1f} pts",
+                    )
+                    st.success("Logged to tracker.")
+                except Exception as e:
+                    st.error(f"Couldn't log: {e}")
 
 # ---------- posted daily parlay ----------
 # Cached for 6h and shared by every visitor to this app, so it acts as a
@@ -40,6 +87,20 @@ with st.container(border=True):
         st.caption("EV assumes the two legs are independent and uses FPI as the 'fair' "
                    "probability for each leg. A parlay concentrates risk — a $100 stake "
                    "here can lose in full even if each leg looked like a good single bet.")
+        if db.configured():
+            if st.button("📌 Log this parlay", use_container_width=True):
+                try:
+                    db.log_bet(
+                        game=" + ".join(l["game"] for l in parlay["legs"]),
+                        team=" + ".join(l["team"] for l in parlay["legs"]),
+                        market="parlay", book=" / ".join(sorted({l["book"] for l in parlay["legs"]})),
+                        odds=parlay["combined_decimal_odds"], stake=parlay["stake"],
+                        model_prob=parlay["combined_fair_prob"], source="daily_parlay",
+                        notes=f"EV ${parlay['ev']:+.2f}",
+                    )
+                    st.success("Logged to tracker.")
+                except Exception as e:
+                    st.error(f"Couldn't log: {e}")
 
 try:
     default_key = st.secrets.get("ODDS_API_KEY", "")
@@ -100,8 +161,27 @@ if picks is not None:
                     placed.append(p)
 
         if st.button(f"Log {len(placed)} placed bets", disabled=not placed, use_container_width=True):
-            log_picks(placed)
-            st.success("Saved to picks_log.csv")
+            if db.configured():
+                errors = 0
+                for p in placed:
+                    try:
+                        db.log_bet(
+                            game=p["game"], team=f"{p['pick']} {p['line']}".strip(),
+                            market=p["market"], book=p["book"], odds=p["odds"],
+                            stake=p["stake"], model_prob=p["fair_prob"], source="ev_picks",
+                            notes=f"EV {p['ev']*100:.1f}%",
+                        )
+                    except Exception:
+                        errors += 1
+                if errors:
+                    st.warning(f"Logged {len(placed) - errors}/{len(placed)} — {errors} failed.")
+                else:
+                    st.success(f"Logged {len(placed)} bet(s) to the Results Tracker.")
+            else:
+                log_picks(placed)
+                st.info("Results Tracker isn't connected yet, so this saved to picks_log.csv "
+                        "instead (that file won't survive an app restart). See the Results "
+                        "Tracker page to set up permanent tracking.")
 
         st.download_button("Download all picks (CSV)", pd.DataFrame(picks).to_csv(index=False),
                            "picks.csv", "text/csv", use_container_width=True)
