@@ -56,14 +56,12 @@ def _num(x):
 
 
 # ---------- power ratings ----------
-for df in pd.read_html(io.StringIO(html)):
-
+def power_ratings():
     """Returns {team_abbr: nfelo_rating}. Tries an HTML table first, then
     falls back to scanning the page's embedded JSON."""
     html = _fetch(POWER_URL)
 
-    for df in pd.read_html(html):
-        cols = [str(c).lower() for c in df.columns]
+    for df in pd.read_html(io.StringIO(html)):
         team_col = next((c for c in df.columns if str(c).lower() in ("team", "unnamed: 1")), None)
         elo_col = next((c for c in df.columns if "nfelo" in str(c).lower()), None)
         if team_col is not None and elo_col is not None:
@@ -94,15 +92,14 @@ def elo_win_prob(home_elo, away_elo, hfa=55.0):
 
 
 # ---------- nfelo's own EV bets page ----------
-for df in pd.read_html(io.StringIO(html)):
-
+def ev_bets():
     """Returns a list of nfelo's own flagged +EV sides:
     [{team, opponent, spread, ev}, ...]. Best-effort parse; may return []
     if nfelo changes their page layout."""
     html = _fetch(EV_URL)
     picks = []
 
-    for df in pd.read_html(html):
+    for df in pd.read_html(io.StringIO(html)):
         cols = {str(c).lower(): c for c in df.columns}
         team_col = next((cols[c] for c in cols if "team" in c or c == "pick"), None)
         ev_col = next((cols[c] for c in cols if c in ("ev", "expected value") or "ev" in c), None)
