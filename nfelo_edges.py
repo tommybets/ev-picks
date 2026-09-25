@@ -1,14 +1,12 @@
 """Pull nfelo's own power ratings and +EV betting card from nfeloapp.com,
 and cross-check them against your sportsbook-derived picks."""
-import io
-import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd
 import requests
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TailwindBets/1.0)"}
-POWER_URL = "https://www.nfeloapp.com/nfl-power-ratings/"
+TEAM_URL = "https://www.nfeloapp.com/teams/{abbr}"
 EV_URL = "https://www.nfeloapp.com/games/nfl-ev-bets/"
 
 TEAM_ABBRS = {
@@ -25,27 +23,14 @@ def _fetch(url):
     return r.text
 
 
-def _next_data(html):
-    """Pull the Next.js __NEXT_DATA__ JSON blob embedded in the page, if present."""
-    m = re.search(
-        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except json.JSONDecodeError:
-        return None
-
-
-def _walk(obj):
-    """Yield every dict found anywhere inside a nested JSON structure."""
-    if isinstance(obj, dict):
-        yield obj
-        for v in obj.values():
-            yield from _walk(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from _walk(v)
+def _visible_text(html):
+    """Strip tags/scripts down to plain, whitespace-collapsed page text."""
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.S | re.I)
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    for a, b in (("&amp;", "&"), ("&nbsp;", " "), ("&#39;", "'"), ("&quot;", '"')):
+        text = text.replace(a, b)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _num(x):
@@ -56,33 +41,20 @@ def _num(x):
 
 
 # ---------- power ratings ----------
+def _one_team_rating(abbr):
+    try:
+        text = _visible_text(_fetch(TEAM_URL.format(abbr=abbr.lower())))
+    except Exception:
+        return None
+    m = re.search(r"nfelo Rating\s*(\d{3,4})", text)
+    return _num(m.group(1)) if m else None
+
+
 def power_ratings():
-    """Returns {team_abbr: nfelo_rating}. Tries an HTML table first, then
-    falls back to scanning the page's embedded JSON."""
-    html = _fetch(POWER_URL)
-
-    for df in pd.read_html(io.StringIO(html)):
-        team_col = next((c for c in df.columns if str(c).lower() in ("team", "unnamed: 1")), None)
-        elo_col = next((c for c in df.columns if "nfelo" in str(c).lower()), None)
-        if team_col is not None and elo_col is not None:
-            out = {}
-            for _, row in df.iterrows():
-                team = re.sub(r"[^A-Z]", "", str(row[team_col]).upper())[-3:]
-                rating = _num(row[elo_col])
-                if team in TEAM_ABBRS and rating and rating > 800:
-                    out[team] = rating
-            if len(out) >= 20:
-                return out
-
-    data = _next_data(html)
-    out = {}
-    if data:
-        for d in _walk(data):
-            team = str(d.get("team", d.get("abbr", ""))).upper()
-            rating = _num(d.get("nfelo", d.get("elo", d.get("rating"))))
-            if team in TEAM_ABBRS and rating and rating > 800:
-                out[team] = rating
-    return out
+    """Returns {team_abbr: nfelo_rating}, one request per team page."""
+    with ThreadPoolExecutor(8) as ex:
+        ratings = list(ex.map(_one_team_rating, sorted(TEAM_ABBRS)))
+    return {t: r for t, r in zip(sorted(TEAM_ABBRS), ratings) if r and r > 800}
 
 
 def elo_win_prob(home_elo, away_elo, hfa=55.0):
@@ -92,39 +64,32 @@ def elo_win_prob(home_elo, away_elo, hfa=55.0):
 
 
 # ---------- nfelo's own EV bets page ----------
+_EV_PATTERN = re.compile(
+    r"Model Recommendation\s+"
+    r"([A-Za-z0-9 .'\-]+?)\s+"          # team full name, e.g. "Houston Texans"
+    r"[A-Za-z.]+[+-]\d+(?:\.\d+)?\s+"    # short pick label, e.g. "Texans-5.5" (discarded)
+    r"Market Line\s*([+-]?\d+(?:\.\d+)?)\s+"
+    r"Model Line\s*([+-]?\d+(?:\.\d+)?|N/A)\s+"
+    r"Cover Probability\s*([\d.]+)%\s+"
+    r"Expected Value\s*([+-]?[\d.]+)%"
+)
+
+
 def ev_bets():
     """Returns a list of nfelo's own flagged +EV sides:
-    [{team, opponent, spread, ev}, ...]. Best-effort parse; may return []
-    if nfelo changes their page layout."""
-    html = _fetch(EV_URL)
+    [{team, spread, model_line, cover_prob, ev}, ...]. Best-effort text
+    parse of nfelo's Betting Card page; returns [] if their layout changed."""
+    text = _visible_text(_fetch(EV_URL))
     picks = []
-
-    for df in pd.read_html(io.StringIO(html)):
-        cols = {str(c).lower(): c for c in df.columns}
-        team_col = next((cols[c] for c in cols if "team" in c or c == "pick"), None)
-        ev_col = next((cols[c] for c in cols if c in ("ev", "expected value") or "ev" in c), None)
-        spread_col = next((cols[c] for c in cols if "spread" in c or "line" in c), None)
-        if team_col is not None and ev_col is not None:
-            for _, row in df.iterrows():
-                ev = _num(str(row[ev_col]).replace("%", ""))
-                team = re.sub(r"[^A-Za-z ]", "", str(row[team_col])).strip()
-                if ev is not None and team:
-                    picks.append(dict(
-                        team=team,
-                        spread=row[spread_col] if spread_col is not None else None,
-                        ev=ev / 100 if abs(ev) > 1 else ev,
-                    ))
-            if picks:
-                return picks
-
-    data = _next_data(html)
-    if data:
-        for d in _walk(data):
-            ev = _num(d.get("ev", d.get("expected_value")))
-            team = d.get("team") or d.get("pick_team")
-            if ev is not None and team:
-                picks.append(dict(team=str(team), spread=d.get("spread"),
-                                  ev=ev / 100 if abs(ev) > 1 else ev))
+    for m in _EV_PATTERN.finditer(text):
+        team, market_line, model_line, cover_prob, ev = m.groups()
+        picks.append(dict(
+            team=team.strip(),
+            spread=_num(market_line),
+            model_line=None if model_line == "N/A" else _num(model_line),
+            cover_prob=_num(cover_prob) / 100 if _num(cover_prob) is not None else None,
+            ev=_num(ev) / 100 if _num(ev) is not None else None,
+        ))
     return picks
 
 
