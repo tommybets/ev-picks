@@ -1,5 +1,6 @@
 """Pull nfelo's own power ratings and +EV betting card from nfeloapp.com,
 and cross-check them against your sportsbook-derived picks."""
+import io
 import json
 import re
 
