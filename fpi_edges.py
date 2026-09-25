@@ -107,6 +107,21 @@ def fpi_home_prob(league, eid):
 
 
 def fpi_map(league, games):
+    if league == "NHL":
+        # ESPN doesn't publish a BPI/FPI-style predictor for hockey
+        # (verified directly), so use MoneyPuck's public win probabilities
+        # instead. Their page only covers the current slate, so games on
+        # later days simply won't match — same "With FPI" behavior as any
+        # other data-availability gap.
+        import moneypuck_edges as mpe
+        team_probs = mpe.team_win_probs()
+        out = {}
+        for g in games:
+            home_abbr = mpe._norm(g["home"].get("abbreviation", ""))
+            p = team_probs.get(home_abbr)
+            if p is not None:
+                out[g["id"]] = p
+        return out
     with ThreadPoolExecutor(8) as ex:
         probs = list(ex.map(lambda g: fpi_home_prob(league, g["id"]), games))
     return {g["id"]: p for g, p in zip(games, probs)}
