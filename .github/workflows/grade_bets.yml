@@ -1,0 +1,26 @@
+# Runs the auto-grader every 20 minutes: saves closing prices for bets about
+# to start, and grades bets whose games have finished.
+# Needs repository secrets SUPABASE_URL, SUPABASE_KEY and ODDS_API_KEY
+# (Settings → Secrets and variables → Actions).
+name: Grade bets
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}   # adds a "Run workflow" button for testing
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests pandas lxml html5lib
+      - run: python grader.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
