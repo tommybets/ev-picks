@@ -49,7 +49,8 @@ def best_single_pick(stake=100.0, leagues=dp.DAILY_LEAGUES):
     return dict(
         league=pick.get("league", ""), date=slate_date.isoformat(),
         game=pick["game"], team=pick["team"],
-        kickoff=pick.get("kickoff"), book=book, price=price, decimal_odds=decimal_odds,
+        kickoff=pick.get("kickoff"), home_name=pick.get("home_name", ""),
+        away_name=pick.get("away_name", ""), book=book, price=price, decimal_odds=decimal_odds,
         model_wp=pick["fpi"], edge=pick["best"], confidence=tier_label,
         stake=stake, payout=payout, profit=profit, ev=ev, ev_pct=ev / stake,
     )
