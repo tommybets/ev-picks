@@ -15,23 +15,23 @@ st.title("🎯 Daily +EV Picks")
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def _posted_single_pick():
     try:
-        return dsp.best_single_pick(100.0, "NFL")
+        return dsp.best_single_pick(100.0)
     except Exception as e:
         return {"error": str(e)}
 
 with st.container(border=True):
     st.subheader("🎯 Today's Top Pick")
-    st.caption("The single side on the next NFL slate the model both favors to win and "
+    st.caption("The single side on the next slate (any sport) the model both favors to win and "
                "sees positive EV on — prioritizes being a real favorite over chasing the "
                "single biggest (often riskier, lower win-probability) edge.")
     pick = _posted_single_pick()
     if not pick:
-        st.info("No positive-edge game found on the next available NFL slate.")
+        st.info("No positive-edge game found on the next available slate.")
     elif "error" in pick:
         st.warning(f"Couldn't build today's pick: {pick['error']}")
     else:
         st.markdown(f"**Slate: {pick['date']}**")
-        st.markdown(f"**{pick['team']}** · {pick['game']}  \n"
+        st.markdown(f"**{pick['team']}** · {pick['game']} ({pick['league']})  \n"
                     f"{pick['book']} @ {pick['price']*100:.0f}¢ (decimal {pick['decimal_odds']:.2f}) · "
                     f"model win prob **{pick['model_wp']*100:.1f}%** ({pick['confidence']}) · "
                     f"edge {pick['edge']*100:+.1f} pts")
@@ -60,31 +60,35 @@ with st.container(border=True):
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def _posted_parlay():
     try:
-        return dp.build_parlay(100.0, "NFL")
+        return dp.build_parlay(100.0)
     except Exception as e:
         return {"error": str(e)}
 
 with st.container(border=True):
     st.subheader("📌 Today's Posted Parlay")
-    st.caption("Auto-built from the two best FPI-vs-market edges (Kalshi/Polymarket) on the "
-               "next available NFL slate. Refreshes every 6 hours for everyone viewing this app.")
+    st.caption("The best-value 2-leg parlay across every sport on the next available slate "
+               "(NFL, college football, NBA, NHL, MLB): the highest-EV pair of positive edges "
+               "from different games, favoring pairs with a real chance to cash over long shots. "
+               "Refreshes every 6 hours for everyone viewing this app.")
     parlay = _posted_parlay()
     if not parlay:
         st.info("No slate with two priced edges found in the next 10 days.")
     elif "error" in parlay:
         st.warning(f"Couldn't build today's parlay: {parlay['error']}")
     else:
-        st.markdown(f"**Slate: {parlay['date']}**")
+        st.markdown(f"**Slate: {parlay['date']}** · Grade **{parlay['grade']}**")
+        st.caption(parlay["grade_note"])
         for i, leg in enumerate(parlay["legs"], 1):
-            st.markdown(f"**Leg {i}: {leg['team']}** · {leg['game']}  \n"
+            st.markdown(f"**Leg {i}: {leg['team']}** · {leg['game']} ({leg['league']})  \n"
                         f"{leg['book']} @ {leg['price']*100:.0f}¢ "
-                        f"(decimal {leg['decimal_odds']:.2f}) · FPI {leg['fpi']*100:.1f}% · "
+                        f"(decimal {leg['decimal_odds']:.2f}) · model {leg['fpi']*100:.1f}% · "
                         f"edge {leg['edge']*100:+.1f} pts")
         c1, c2, c3 = st.columns(3)
         c1.metric("$100 payout", f"${parlay['payout']:.2f}")
+        st.caption(f"Combined win chance: {parlay['combined_fair_prob']*100:.1f}%")
         c2.metric("Profit if won", f"${parlay['profit']:.2f}")
         c3.metric("EV", f"${parlay['ev']:+.2f} ({parlay['ev_pct']*100:+.1f}%)")
-        st.caption("EV assumes the two legs are independent and uses FPI as the 'fair' "
+        st.caption("EV assumes the two legs are independent and uses the model (FPI/BPI, or MoneyPuck for NHL) as the 'fair' "
                    "probability for each leg. A parlay concentrates risk — a $100 stake "
                    "here can lose in full even if each leg looked like a good single bet.")
         if db.configured():
@@ -96,7 +100,7 @@ with st.container(border=True):
                         market="parlay", book=" / ".join(sorted({l["book"] for l in parlay["legs"]})),
                         odds=parlay["combined_decimal_odds"], stake=parlay["stake"],
                         model_prob=parlay["combined_fair_prob"], source="daily_parlay",
-                        notes=f"EV ${parlay['ev']:+.2f}",
+                        notes=f"Grade {parlay['grade']}, EV ${parlay['ev']:+.2f}",
                     )
                     st.success("Logged to tracker.")
                 except Exception as e:
