@@ -3,6 +3,7 @@ import streamlit as st
 
 import injury_edges as ie
 import nfelo_edges as ne
+import results_db as db
 from ev_picks import fetch
 
 st.set_page_config(page_title="nfelo Sharpen", page_icon="🧠", layout="centered")
@@ -95,7 +96,8 @@ if st.button("Run comparison", type="primary", use_container_width=True):
                         adj_wp = adj_home_wp if is_home else 1 - adj_home_wp
                         rows.append(dict(
                             game=f"{away} @ {home}", team=o["name"],
-                            book_line=o.get("point"),
+                            book_line=o.get("point"), book_odds=o.get("price"),
+                            book_name=bk.get("title", ""),
                             base_wp=round(base_wp, 3), adjusted_wp=round(adj_wp, 3),
                             shift=round(adj_wp - base_wp, 3),
                             adjustments="; ".join(all_reasons) if all_reasons else "—",
@@ -115,7 +117,7 @@ if "nfelo_rows" in st.session_state:
     else:
         moved = sorted(rows, key=lambda r: -abs(r["shift"]))
         st.subheader("Biggest injury/rest swings")
-        for r in moved[:6]:
+        for idx, r in enumerate(moved[:6]):
             if abs(r["shift"]) < 0.005:
                 continue
             with st.container(border=True):
@@ -125,6 +127,19 @@ if "nfelo_rows" in st.session_state:
                             f"({r['shift']*100:+.1f} pts)")
                 if r["adjustments"] != "—":
                     st.caption(r["adjustments"])
+                if db.configured() and r.get("book_odds"):
+                    if st.button("📌 Log this pick", key=f"log_elo_{idx}"):
+                        try:
+                            db.log_bet(
+                                game=r["game"], team=f"{r['team']} {r['book_line']}",
+                                market="spread", book=r["book_name"] or "sportsbook",
+                                odds=r["book_odds"], stake=50.0,
+                                model_prob=r["adjusted_wp"], source="nfelo_elo",
+                                notes=r["adjustments"] if r["adjustments"] != "—" else "",
+                            )
+                            st.success("Logged to tracker.")
+                        except Exception as e:
+                            st.error(f"Couldn't log: {e}")
 
         with st.expander("All games"):
             df = pd.DataFrame(rows)
