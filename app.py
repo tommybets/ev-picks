@@ -5,6 +5,7 @@ from ev_picks import fetch, find_picks, log_picks
 import daily_parlay as dp
 import daily_single_pick as dsp
 import results_db as db
+from grader import SPORT_TO_LEAGUE
 
 st.set_page_config(page_title="EV Picks", page_icon="🎯", layout="centered")
 st.title("🎯 Daily +EV Picks")
@@ -49,6 +50,9 @@ with st.container(border=True):
                         book=pick["book"], odds=pick["decimal_odds"], stake=pick["stake"],
                         model_prob=pick["model_wp"], source="daily_single_pick",
                         notes=f"{pick['confidence']}, edge {pick['edge']*100:+.1f} pts",
+                        league=pick.get("league"), home_team=pick.get("home_name"),
+                        away_team=pick.get("away_name"), side_team=pick["team"],
+                        kickoff=pick.get("kickoff"),
                     )
                     st.success("Logged to tracker.")
                 except Exception as e:
@@ -101,6 +105,7 @@ with st.container(border=True):
                         odds=parlay["combined_decimal_odds"], stake=parlay["stake"],
                         model_prob=parlay["combined_fair_prob"], source="daily_parlay",
                         notes=f"Grade {parlay['grade']}, EV ${parlay['ev']:+.2f}",
+                        legs=[dp.grading_leg(l) for l in parlay["legs"]],
                     )
                     st.success("Logged to tracker.")
                 except Exception as e:
@@ -174,6 +179,9 @@ if picks is not None:
                             market=p["market"], book=p["book"], odds=p["odds"],
                             stake=p["stake"], model_prob=p["fair_prob"], source="ev_picks",
                             notes=f"EV {p['ev']*100:.1f}%",
+                            league=SPORT_TO_LEAGUE.get(p["sport"]), home_team=p.get("home_team"),
+                            away_team=p.get("away_team"), side_team=p["pick"],
+                            line=p["line"] if p["line"] != "" else None, kickoff=p["time"],
                         )
                     except Exception:
                         errors += 1
