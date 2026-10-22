@@ -107,6 +107,17 @@ def fpi_home_prob(league, eid):
 
 
 def fpi_map(league, games):
+    live = [g for g in games if g.get("state") == "in"]
+    pre = [g for g in games if g.get("state") != "in"]
+    out = _pregame_map(league, pre) if pre else {}
+    if live and league != "NHL":  # no live hockey model available (MoneyPuck is pregame)
+        with ThreadPoolExecutor(8) as ex:
+            probs = list(ex.map(lambda g: live_home_prob(league, g["id"]), live))
+        out.update({g["id"]: p for g, p in zip(live, probs) if p is not None})
+    return out
+
+
+def _pregame_map(league, games):
     if league == "NHL":
         # ESPN doesn't publish a BPI/FPI-style predictor for hockey
         # (verified directly), so use MoneyPuck's public win probabilities
@@ -247,7 +258,7 @@ def poly_lookup(cands, game):
 
 
 # ---------- combine ----------
-def build_rows(games, fpi, kal_events, poly):
+def build_rows(games, fpi, kal_events, poly, league=None):
     rows = []
     for g in games:
         ph = fpi.get(g["id"])
@@ -266,13 +277,36 @@ def build_rows(games, fpi, kal_events, poly):
                 game=f'{g["away"].get("abbreviation")} @ {g["home"].get("abbreviation")}',
                 kickoff=g["date"], team=g[side].get("displayName", "?"), fpi=p,
                 kalshi_ask=ask, kalshi_edge=k_edge, poly_price=pp, poly_edge=p_edge,
-                best=max(edges) if edges else None))
+                best=max(edges) if edges else None, league=league, side=side,
+                home_name=g["home"].get("displayName", ""), away_name=g["away"].get("displayName", ""),
+                state=g.get("state", "pre"), status=g.get("status", ""),
+                home_score=g.get("home_score"), away_score=g.get("away_score")))
     return sorted(rows, key=lambda r: -(r["best"] if r["best"] is not None else -9))
 
 from datetime import timedelta
 
 
-def espn_games(league, start, end):
+def _game_from_event(e):
+    comp = e["competitions"][0]
+    sides, scores = {}, {}
+    for c in comp["competitors"]:
+        sides[c["homeAway"]] = c["team"]
+        try:
+            scores[c["homeAway"]] = float(c.get("score"))
+        except (TypeError, ValueError):
+            scores[c["homeAway"]] = None
+    if "home" not in sides or "away" not in sides:
+        return None
+    st = e.get("status", {}).get("type", {})
+    return dict(id=e["id"], date=e.get("date", ""), home=sides["home"], away=sides["away"],
+                state=st.get("state", ""), status=st.get("shortDetail", ""),
+                completed=bool(st.get("completed")),
+                home_score=scores.get("home"), away_score=scores.get("away"))
+
+
+def espn_events(league, start, end):
+    """Every game in the date range regardless of state (pre, in, post),
+    one request per day since ESPN sometimes rejects date ranges."""
     cfg = LEAGUES[league]
     url = ESPN_SITE.format(sport=cfg["espn_sport"], lg=cfg["espn"]) + "/scoreboard"
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
@@ -292,10 +326,33 @@ def espn_games(league, start, end):
         raise RuntimeError(errors[-1])
     games, seen = [], set()
     for e in events:
-        if e["id"] in seen or e.get("status", {}).get("type", {}).get("state") != "pre":
+        if e["id"] in seen:
             continue
         seen.add(e["id"])
-        sides = {c["homeAway"]: c["team"] for c in e["competitions"][0]["competitors"]}
-        if "home" in sides and "away" in sides:
-            games.append(dict(id=e["id"], date=e.get("date", ""), home=sides["home"], away=sides["away"]))
+        g = _game_from_event(e)
+        if g:
+            games.append(g)
     return games
+
+
+def espn_games(league, start, end, include_live=False):
+    """Upcoming games, plus games in progress when include_live is True."""
+    ok = {"pre", "in"} if include_live else {"pre"}
+    return [g for g in espn_events(league, start, end) if g["state"] in ok]
+
+
+def live_home_prob(league, eid):
+    """ESPN's in-game win probability for the home team (the last entry of
+    its play-by-play win-probability chart). None if ESPN doesn't publish
+    one for this game or sport."""
+    cfg = LEAGUES[league]
+    try:
+        d = _get(ESPN_SITE.format(sport=cfg["espn_sport"], lg=cfg["espn"]) + "/summary", event=eid)
+    except Exception:
+        return None
+    wp = d.get("winprobability") or []
+    for entry in reversed(wp):
+        p = to_prob(entry.get("homeWinPercentage"))
+        if p is not None:
+            return p
+    return None
