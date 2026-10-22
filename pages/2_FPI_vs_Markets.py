@@ -73,7 +73,7 @@ if rows is not None:
     flagged = [r for r in rows if r["best"] is not None and r["best"] * 100 >= min_gap]
     if not flagged:
         st.info(f"No gaps of {min_gap}+ points right now.")
-    for r in flagged:
+    for idx, r in enumerate(flagged):
         with st.container(border=True):
             st.markdown(f"**{r['team']}** · {r['game']}")
             st.markdown(f"FPI **{r['fpi']*100:.1f}%**")
@@ -89,7 +89,7 @@ if rows is not None:
             price = r["kalshi_ask"] if use_kalshi else r["poly_price"]
             book_name = "Kalshi" if use_kalshi else "Polymarket"
             if db.configured() and price:
-                if st.button("📌 Log this pick", key=f"log_{r['game']}_{r['team']}"):
+                if st.button("📌 Log this pick", key=f"log_fpi_{idx}"):
                     try:
                         db.log_bet(
                             game=r["game"], team=r["team"], market="prediction_market",
@@ -107,7 +107,7 @@ if rows is not None:
     if len(flagged) < 2:
         st.info("Need at least 2 flagged picks above to build a parlay.")
     else:
-        options = {f"{r['team']} ({r['game']}) · edge {r['best']*100:+.1f}pts": i
+        options = {f"{r['team']} ({r['game']}, {fe.format_kickoff(r['kickoff'])}) · edge {r['best']*100:+.1f}pts": i
                    for i, r in enumerate(flagged)}
         chosen_labels = st.multiselect("Pick legs", list(options.keys()), key="fpi_parlay_legs")
         parlay_stake = st.number_input("Stake ($)", min_value=1.0, value=50.0, step=5.0,
