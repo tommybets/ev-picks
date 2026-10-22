@@ -20,12 +20,20 @@ def load_espn(league, days):
     return games, fe.fpi_map(league, games)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
+def load_espn_live(league, days):
+    # Live win probabilities change every play, so this cache is only a minute.
+    games = fe.espn_games(league, date.today() - timedelta(days=1),
+                          date.today() + timedelta(days=days), include_live=True)
+    return games, fe.fpi_map(league, games)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_kalshi(series):
     return fe.kalshi_events(series)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_poly(league, series):
     return fe.poly_candidates(league, series or None)
 
@@ -33,6 +41,9 @@ def load_poly(league, series):
 league = st.selectbox("League", list(fe.LEAGUES))
 days = st.slider("Games in next N days", 1, 14, 7)
 min_gap = st.slider("Flag gaps of at least (points)", 2, 15, 5)
+include_live = st.toggle("Include live games", value=False,
+                         help="Adds games in progress, using ESPN's in-game win probability. "
+                              "Not available for NHL.")
 with st.expander("Advanced"):
     k_series = st.text_input("Kalshi series ticker", fe.LEAGUES[league]["kalshi"])
     p_series = st.text_input("Polymarket series id (blank = auto-detect)", "")
@@ -41,7 +52,7 @@ if st.button("Compare", type="primary", use_container_width=True):
     status = {}
     with st.spinner("Loading ESPN FPI..."):
         try:
-            games, fpi = load_espn(league, days)
+            games, fpi = (load_espn_live if include_live else load_espn)(league, days)
         except Exception as e:
             st.error(f"ESPN failed: {e}")
             st.stop()
@@ -58,7 +69,7 @@ if st.button("Compare", type="primary", use_container_width=True):
         except Exception as e:
             poly = []
             st.warning(f"Polymarket failed: {e}")
-    st.session_state["fpi_rows"] = fe.build_rows(games, fpi, kal, poly)
+    st.session_state["fpi_rows"] = fe.build_rows(games, fpi, kal, poly, league=league)
     st.session_state["fpi_meta"] = (len(games), sum(v is not None for v in fpi.values()), len(kal), len(poly))
 
 rows = st.session_state.get("fpi_rows")
@@ -73,10 +84,19 @@ if rows is not None:
     flagged = [r for r in rows if r["best"] is not None and r["best"] * 100 >= min_gap]
     if not flagged:
         st.info(f"No gaps of {min_gap}+ points right now.")
+    if include_live and any(r.get("state") == "in" for r in rows):
+        st.warning("Live gaps are usually timing, not value: Kalshi and Polymarket prices "
+                   "react within seconds, while ESPN's live win probability updates after "
+                   "each play is logged. Check the live price yourself before acting on one.")
     for idx, r in enumerate(flagged):
         with st.container(border=True):
+            if r.get("state") == "in":
+                hs = "" if r.get("home_score") is None else f"{r['home_score']:.0f}"
+                as_ = "" if r.get("away_score") is None else f"{r['away_score']:.0f}"
+                st.markdown(f"🔴 **LIVE** · {r.get('status', '')} · {r['game']} {as_}–{hs}")
             st.markdown(f"**{r['team']}** · {r['game']}")
-            st.markdown(f"FPI **{r['fpi']*100:.1f}%**")
+            label = "Live win prob" if r.get("state") == "in" else "FPI"
+            st.markdown(f"{label} **{r['fpi']*100:.1f}%**")
             if r["kalshi_ask"]:
                 st.markdown(f"Kalshi ask **{r['kalshi_ask']*100:.0f}¢** → net edge **{r['kalshi_edge']*100:+.1f} pts** (after est. fee)")
             if r["poly_price"]:
@@ -96,6 +116,9 @@ if rows is not None:
                             book=book_name, odds=1.0 / price, stake=50.0,
                             model_prob=r["fpi"], source="fpi_markets",
                             notes=f"gap {r['best']*100:+.1f} pts",
+                            league=r.get("league"), home_team=r.get("home_name"),
+                            away_team=r.get("away_name"), side_team=r["team"],
+                            kickoff=r["kickoff"],
                         )
                         st.success("Logged to tracker.")
                     except Exception as e:
@@ -119,7 +142,9 @@ if rows is not None:
             for r in chosen_rows:
                 price, book = dp.leg_price(r)
                 legs.append(dict(prob=r["fpi"], decimal_odds=1.0 / price,
-                                 game=r["game"], team=r["team"], book=book, price=price))
+                                 game=r["game"], team=r["team"], book=book, price=price,
+                                 league=r.get("league"), home_name=r.get("home_name"),
+                                 away_name=r.get("away_name"), kickoff=r["kickoff"]))
             result = pg.combine_parlay(legs, parlay_stake)
             letter, note = pg.grade_parlay(result["edge_pts"], result["combined_prob"])
             st.session_state["fpi_parlay_result"] = dict(
@@ -151,6 +176,7 @@ if rows is not None:
                                 odds=pr["combined_decimal_odds"], stake=pr["stake"],
                                 model_prob=pr["combined_prob"], source="fpi_parlay",
                                 notes=f"Grade {pr['grade']}, EV ${pr['ev']:+.2f}",
+                                legs=[dp.grading_leg(l) for l in pr["legs"]],
                             )
                             st.success("Logged to tracker.")
                         except Exception as e:
