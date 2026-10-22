@@ -2,19 +2,51 @@
 using its REST API directly with `requests` — no extra DB driver needed.
 Streamlit Cloud's local disk resets on every restart/redeploy, so this is
 what actually gives you history that survives across days and app reboots."""
+import json
+import os
+
 import requests
-import streamlit as st
+
+try:
+    import streamlit as st
+except ImportError:  # running as a plain script (e.g. the GitHub Actions grader)
+    st = None
 
 RESULT_OPTIONS = ["pending", "win", "loss", "push"]
 
+# Columns the auto-grader needs. Older tables won't have them; see MIGRATION_SQL.
+GRADING_FIELDS = ("league", "home_team", "away_team", "side_team", "line", "kickoff", "legs")
+
+MIGRATION_SQL = """alter table bets
+  add column if not exists league text,
+  add column if not exists home_team text,
+  add column if not exists away_team text,
+  add column if not exists side_team text,
+  add column if not exists line float8,
+  add column if not exists kickoff timestamptz,
+  add column if not exists legs jsonb,
+  add column if not exists closing_line float8,
+  add column if not exists graded_at timestamptz;"""
+
+
+def secret(name):
+    """Reads a setting from Streamlit Secrets, or from an environment
+    variable when running outside Streamlit (GitHub Actions)."""
+    if st is not None:
+        try:
+            v = st.secrets[name]
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    return os.environ.get(name)
+
 
 def _creds():
-    try:
-        url = st.secrets["SUPABASE_URL"].rstrip("/")
-        key = st.secrets["SUPABASE_KEY"]
-        return url, key
-    except (KeyError, FileNotFoundError):
+    url, key = secret("SUPABASE_URL"), secret("SUPABASE_KEY")
+    if not url or not key:
         return None, None
+    return url.rstrip("/"), key
 
 
 def configured():
@@ -43,18 +75,46 @@ def clv(bet_odds, closing_odds):
     return p_close - p_bet  # book's fair-price view moved away from your price
 
 
-def log_bet(game, team, market, book, odds, stake, model_prob, source, notes=""):
-    """Inserts one bet. Call this whenever a pick from any page gets placed."""
+def log_bet(game, team, market, book, odds, stake, model_prob, source, notes="", **grading):
+    """Inserts one bet. Optional keyword fields (league, home_team, away_team,
+    side_team, line, kickoff, legs) let the auto-grader settle it later.
+    If the table hasn't been upgraded with those columns yet, the bet is
+    still saved without them (it just has to be graded by hand)."""
     url, key = _creds()
     if not url:
         return None
     row = dict(game=game, team=team, market=market, book=book, odds=odds,
                stake=stake, model_prob=model_prob, source=source, notes=notes,
                result="pending")
-    r = requests.post(f"{url}/rest/v1/bets", json=[row],
-                       headers=_headers(key, prefer="return=representation"), timeout=20)
+    extra = {k: v for k, v in grading.items() if k in GRADING_FIELDS and v not in (None, "")}
+    if "legs" in extra:
+        extra["legs"] = json.loads(json.dumps(extra["legs"], default=str))
+    hdr = _headers(key, prefer="return=representation")
+    r = requests.post(f"{url}/rest/v1/bets", json=[{**row, **extra}], headers=hdr, timeout=20)
+    if r.status_code == 400 and extra:
+        r = requests.post(f"{url}/rest/v1/bets", json=[row], headers=hdr, timeout=20)
     r.raise_for_status()
     return r.json()[0]
+
+
+def grading_ready():
+    """True if the table has the auto-grading columns."""
+    url, key = _creds()
+    if not url:
+        return False
+    r = requests.get(f"{url}/rest/v1/bets?select=league,side_team,legs&limit=1",
+                     headers=_headers(key), timeout=20)
+    return r.status_code == 200
+
+
+def pending_bets():
+    url, key = _creds()
+    if not url:
+        return []
+    r = requests.get(f"{url}/rest/v1/bets?result=eq.pending&order=created_at.asc&limit=500",
+                     headers=_headers(key), timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 
 def list_bets(limit=200):
