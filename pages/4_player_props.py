@@ -96,7 +96,8 @@ if st.button("Find prop value", type="primary", use_container_width=True,
                 data, remaining = load_props(sport_key, ev["id"], markets, regions, api_key)
                 found += pe.find_prop_edges(data, min_edge=min_ev)
                 models[f"{ev['away_team']} @ {ev['home_team']}"] = dict(
-                    date=pm.event_date_et(ev["commence_time"]), lines=pe.consensus(data))
+                    date=pm.event_date_et(ev["commence_time"]), lines=pe.consensus(data),
+                    home=ev["home_team"], away=ev["away_team"])
             except Exception as e:
                 st.warning(f"{label}: {e}")
     pm_found, pm_counts = [], {}
