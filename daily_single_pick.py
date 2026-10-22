@@ -16,10 +16,10 @@ CONFIDENCE_TIERS = [
 ]
 
 
-def best_single_pick(stake=100.0, league="NFL"):
+def best_single_pick(stake=100.0, leagues=dp.DAILY_LEAGUES):
     """Returns None if no slate with any positive-edge game is found, else
     a dict describing the single recommended pick."""
-    slate_date, priced = dp.find_daily_slate(league, min_priced=1)
+    slate_date, priced = dp.find_daily_slate(leagues, min_priced=1)
     if not priced:
         return None
 
@@ -47,7 +47,8 @@ def best_single_pick(stake=100.0, league="NFL"):
     ev = pick["fpi"] * payout - stake
 
     return dict(
-        league=league, date=slate_date.isoformat(), game=pick["game"], team=pick["team"],
+        league=pick.get("league", ""), date=slate_date.isoformat(),
+        game=pick["game"], team=pick["team"],
         kickoff=pick.get("kickoff"), book=book, price=price, decimal_odds=decimal_odds,
         model_wp=pick["fpi"], edge=pick["best"], confidence=tier_label,
         stake=stake, payout=payout, profit=profit, ev=ev, ev_pct=ev / stake,
