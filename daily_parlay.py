@@ -1,52 +1,75 @@
-"""Build a 2-leg parlay from the day's best FPI-vs-market edges (Kalshi/Polymarket).
-If no games are on today's slate, rolls forward to the next day that has one."""
+"""Build the day's optimal 2-leg parlay from FPI-vs-market edges
+(Kalshi/Polymarket) across every sport the app tracks. If no games are on
+today's slate, rolls forward to the next day that has one.
+
+"Optimal" here means: among every pair of positive-edge picks from
+different games, the pair with the highest expected value — but only
+among pairs with a realistic chance to cash. Without that floor, the
+highest-EV parlay is almost always two longshot underdogs that will
+usually lose."""
 from datetime import date, timedelta
+from itertools import combinations
 
 import fpi_edges as fe
+import parlay_grading as pg
+
+# Every league the app knows about. Remove names here to exclude a sport.
+DAILY_LEAGUES = tuple(fe.LEAGUES.keys())
+
+# Combined win-probability floors, tried highest first.
+PROB_TIERS = (0.30, 0.20, 0.0)
+
+# Only the strongest edges are paired, which keeps the search fast on
+# busy days (a big college football Saturday can have 100+ priced sides).
+MAX_CANDIDATES = 25
 
 
-def find_daily_slate(league="NFL", max_days=10, min_priced=2):
-    """Returns (date, priced_rows) for the earliest upcoming day with at least
-    `min_priced` games that have a matched Kalshi or Polymarket price."""
-    for offset in range(max_days):
-        d = date.today() + timedelta(days=offset)
+def _as_tuple(leagues):
+    return (leagues,) if isinstance(leagues, str) else tuple(leagues)
+
+
+def find_daily_slate(leagues=DAILY_LEAGUES, max_days=10, min_priced=2):
+    """Returns (date, priced_rows) for the earliest upcoming day where the
+    selected leagues combined have at least `min_priced` games with a matched
+    Kalshi or Polymarket price. Each row is tagged with its league. A league
+    that errors (off-season, a data source down) is skipped, not fatal."""
+    leagues = _as_tuple(leagues)
+
+    markets = {}
+    for lg in leagues:
         try:
-            games = fe.espn_games(league, d, d)
-        except Exception:
-            games = []
-        if not games:
-            continue
-        fpi = fe.fpi_map(league, games)
-        if not any(v is not None for v in fpi.values()):
-            continue
-        try:
-            kal = fe.kalshi_events(fe.LEAGUES[league]["kalshi"])
+            kal = fe.kalshi_events(fe.LEAGUES[lg]["kalshi"])
         except Exception:
             kal = []
         try:
-            poly, _ = fe.poly_candidates(league)
+            poly, _ = fe.poly_candidates(lg)
         except Exception:
             poly = []
-        rows = fe.build_rows(games, fpi, kal, poly)
-        priced = [r for r in rows if r["kalshi_ask"] or r["poly_price"]]
+        markets[lg] = (kal, poly)
+
+    for offset in range(max_days):
+        d = date.today() + timedelta(days=offset)
+        priced = []
+        for lg in leagues:
+            kal, poly = markets[lg]
+            if not kal and not poly:
+                continue
+            try:
+                games = fe.espn_games(lg, d, d)
+                if not games:
+                    continue
+                fpi = fe.fpi_map(lg, games)
+                if not any(v is not None for v in fpi.values()):
+                    continue
+                for r in fe.build_rows(games, fpi, kal, poly):
+                    if r["kalshi_ask"] or r["poly_price"]:
+                        r["league"] = lg
+                        priced.append(r)
+            except Exception:
+                continue
         if len(priced) >= min_priced:
             return d, priced
     return None, []
-
-
-def pick_best_two(priced_rows):
-    """Top 2 edges, each from a different game (two sides of one game are
-    correlated, so that wouldn't be a real parlay)."""
-    ranked = sorted((r for r in priced_rows if r["best"] is not None), key=lambda r: -r["best"])
-    chosen, seen_games = [], set()
-    for r in ranked:
-        if r["game"] in seen_games:
-            continue
-        chosen.append(r)
-        seen_games.add(r["game"])
-        if len(chosen) == 2:
-            break
-    return chosen
 
 
 def leg_price(row):
@@ -57,32 +80,54 @@ def leg_price(row):
     return row["poly_price"], "Polymarket"
 
 
-def build_parlay(stake=100.0, league="NFL"):
-    """Returns None if no slate with 2+ priced edges is found within max_days,
-    else a dict with both legs, combined odds, payout, profit, and EV.
-    EV assumes leg outcomes are independent (different games) and uses each
-    leg's FPI probability as the 'fair' probability."""
-    slate_date, priced = find_daily_slate(league)
+def _leg(row):
+    price, book = leg_price(row)
+    return dict(league=row.get("league", ""), game=row["game"], team=row["team"],
+                kickoff=row["kickoff"], book=book, price=price,
+                decimal_odds=1.0 / price, prob=row["fpi"], fpi=row["fpi"],
+                edge=row["best"])
+
+
+def pick_optimal_pair(priced_rows):
+    """Returns (leg_a, leg_b, combined_result) for the best pair, or None."""
+    cands = sorted((r for r in priced_rows if r["best"] is not None and r["best"] > 0),
+                   key=lambda r: -r["best"])[:MAX_CANDIDATES]
+    legs = []
+    for r in cands:
+        price, _ = leg_price(r)
+        if price and 0 < price < 1:
+            legs.append(_leg(r))
+
+    pairs = []
+    for a, b in combinations(legs, 2):
+        if (a["league"], a["game"]) == (b["league"], b["game"]):
+            continue  # two sides of one game are correlated, not a real parlay
+        pairs.append((a, b, pg.combine_parlay([a, b], 1.0)))
+
+    for floor in PROB_TIERS:
+        pool = [p for p in pairs if p[2]["combined_prob"] >= floor]
+        if pool:
+            return max(pool, key=lambda p: p[2]["ev"])
+    return None
+
+
+def build_parlay(stake=100.0, leagues=DAILY_LEAGUES):
+    """Returns None if no slate with 2+ priced positive edges is found,
+    else a dict with both legs, combined odds, payout, profit, EV and grade.
+    EV assumes the legs are independent and uses each leg's FPI (or
+    MoneyPuck, for NHL) probability as the 'fair' probability."""
+    slate_date, priced = find_daily_slate(leagues)
     if not priced:
         return None
-    legs = pick_best_two(priced)
-    if len(legs) < 2:
+    best = pick_optimal_pair(priced)
+    if best is None:
         return None
-
-    combined_decimal, combined_fair_prob, leg_info = 1.0, 1.0, []
-    for r in legs:
-        price, book = leg_price(r)
-        decimal_odds = 1.0 / price
-        combined_decimal *= decimal_odds
-        combined_fair_prob *= r["fpi"]
-        leg_info.append(dict(
-            game=r["game"], team=r["team"], kickoff=r["kickoff"], book=book,
-            price=price, decimal_odds=decimal_odds, fpi=r["fpi"], edge=r["best"]))
-
-    payout = stake * combined_decimal
-    profit = payout - stake
-    ev = combined_fair_prob * payout - stake
+    a, b, _ = best
+    res = pg.combine_parlay([a, b], stake)
+    grade, grade_note = pg.grade_parlay(res["edge_pts"], res["combined_prob"])
     return dict(
-        league=league, date=slate_date.isoformat(), legs=leg_info, stake=stake,
-        combined_decimal_odds=combined_decimal, payout=payout, profit=profit,
-        combined_fair_prob=combined_fair_prob, ev=ev, ev_pct=ev / stake)
+        leagues=sorted({a["league"], b["league"]}), date=slate_date.isoformat(),
+        legs=[a, b], stake=stake,
+        combined_decimal_odds=res["combined_decimal_odds"], payout=res["payout"],
+        profit=res["profit"], combined_fair_prob=res["combined_prob"],
+        ev=res["ev"], ev_pct=res["ev_pct"], grade=grade, grade_note=grade_note)
