@@ -101,6 +101,7 @@ if st.button("Run comparison", type="primary", use_container_width=True):
                             base_wp=round(base_wp, 3), adjusted_wp=round(adj_wp, 3),
                             shift=round(adj_wp - base_wp, 3),
                             adjustments="; ".join(all_reasons) if all_reasons else "—",
+                            home=home, away=away, kickoff=ev.get("commence_time"),
                         ))
     st.session_state["nfelo_rows"] = rows
     st.session_state["nfelo_meta"] = (len(power), sum(len(v) for v in injuries.values()) if injuries else 0)
@@ -136,6 +137,8 @@ if "nfelo_rows" in st.session_state:
                                 odds=r["book_odds"], stake=50.0,
                                 model_prob=r["adjusted_wp"], source="nfelo_elo",
                                 notes=r["adjustments"] if r["adjustments"] != "—" else "",
+                                league="NFL", home_team=r.get("home"), away_team=r.get("away"),
+                                side_team=r["team"], line=r["book_line"], kickoff=r.get("kickoff"),
                             )
                             st.success("Logged to tracker.")
                         except Exception as e:
