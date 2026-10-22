@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+import grader
 import results_db as db
 
 st.set_page_config(page_title="Results Tracker", page_icon="📊", layout="centered")
@@ -45,6 +46,48 @@ if not db.configured():
             "publicly with this setup, since anyone with it could write to the table."
         )
     st.stop()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _grading_ready():
+    try:
+        return db.grading_ready()
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _auto_grade(_bucket):
+    # Runs at most once every 10 minutes no matter how often the page loads.
+    try:
+        return grader.run()
+    except Exception as e:
+        return dict(checked=0, closings=0, graded=0, manual=0, errors=[str(e)])
+
+
+st.subheader("Auto-grading")
+if not _grading_ready():
+    st.warning("One-time upgrade needed: your bets table is missing the columns that let "
+               "results and closing prices fill in automatically. Until then, everything "
+               "still saves; you'll just grade bets by hand.")
+    with st.expander("How to upgrade (1 minute)"):
+        st.markdown("In Supabase, open **SQL Editor**, paste this, and tap **Run**:")
+        st.code(db.MIGRATION_SQL, language="sql")
+        st.markdown("Then reboot this app. Bets logged after the upgrade grade themselves.")
+else:
+    import time
+    summary = _auto_grade(int(time.time() // 600))
+    if st.button("🔄 Check results now", use_container_width=True):
+        _auto_grade.clear()
+        summary = grader.run()
+    st.caption(f"Last check: {summary['graded']} bet(s) graded, {summary['closings']} "
+               f"closing price(s) saved, {summary['manual']} logged without game details "
+               f"(grade those by hand below).")
+    for err in summary.get("errors", [])[:3]:
+        st.caption(f"⚠️ {err}")
+    st.caption("Results fill in automatically after games end. Closing prices need the "
+               "scheduled job (see the setup notes) since they're captured right before "
+               "each game starts.")
 
 st.subheader("Log a bet")
 with st.form("log_bet", clear_on_submit=True):
@@ -93,7 +136,9 @@ if bets:
             st.markdown(f"**{b['team']}** · {b['game']} · {b['market']} @ {b['book']}")
             st.caption(f"Odds {b['odds']:.2f} · Stake ${b['stake']:.2f} · "
                        f"Model {b['model_prob']*100:.0f}% · via {b['source']}"
-                       + (f" · {b['notes']}" if b.get("notes") else ""))
+                       + (f" · {b['notes']}" if b.get("notes") else "")
+                       + (f" · line moved to {b['closing_line']:+g} before start"
+                          if b.get("closing_line") is not None else ""))
             cols = st.columns([2, 2, 1])
             new_result = cols[0].selectbox(
                 "Result", db.RESULT_OPTIONS,
