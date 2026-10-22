@@ -7,8 +7,8 @@ import props_edges as pe
 import results_db as db
 from ev_picks import kelly
 
-st.set_page_config(page_title="Player Props", page_icon="🏀", layout="centered")
-st.title("🏀 Player Props")
+st.set_page_config(page_title="Player Props", page_icon="↕️", layout="centered")
+st.title("Player Props⬆️⬇️")
 st.caption("Finds player props where one sportsbook's price beats the consensus fair price "
            "across all books (vig removed, sharp books weighted more). Props are priced "
            "less sharply than spreads, which is why they're often where real value shows up.")
