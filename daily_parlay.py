@@ -6,7 +6,7 @@ today's slate, rolls forward to the next day that has one.
 different games, the pair with the highest expected value — but only
 among pairs with a realistic chance to cash. Without that floor, the
 highest-EV parlay is almost always two longshot underdogs that will
-usually lose."""
+usually lose, which isn't a useful daily post."""
 from datetime import date, timedelta
 from itertools import combinations
 
@@ -61,7 +61,7 @@ def find_daily_slate(leagues=DAILY_LEAGUES, max_days=10, min_priced=2):
                 fpi = fe.fpi_map(lg, games)
                 if not any(v is not None for v in fpi.values()):
                     continue
-                for r in fe.build_rows(games, fpi, kal, poly):
+                for r in fe.build_rows(games, fpi, kal, poly, league=lg):
                     if r["kalshi_ask"] or r["poly_price"]:
                         r["league"] = lg
                         priced.append(r)
@@ -85,7 +85,16 @@ def _leg(row):
     return dict(league=row.get("league", ""), game=row["game"], team=row["team"],
                 kickoff=row["kickoff"], book=book, price=price,
                 decimal_odds=1.0 / price, prob=row["fpi"], fpi=row["fpi"],
-                edge=row["best"])
+                edge=row["best"], home_name=row.get("home_name", ""),
+                away_name=row.get("away_name", ""))
+
+
+def grading_leg(leg):
+    """The fields the auto-grader needs to settle one leg later."""
+    return dict(league=leg.get("league"), home_team=leg.get("home_name"),
+                away_team=leg.get("away_name"), side_team=leg.get("team"),
+                kickoff=leg.get("kickoff"), market="h2h", book=leg.get("book"),
+                decimal_odds=leg.get("decimal_odds"))
 
 
 def pick_optimal_pair(priced_rows):
