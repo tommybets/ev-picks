@@ -16,7 +16,7 @@ when its player can be tied to a player the sportsbooks also price, so a
 misread market is skipped rather than turned into a fake edge."""
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import NormalDist
 from zoneinfo import ZoneInfo
 
@@ -30,10 +30,19 @@ ET = ZoneInfo("America/New_York")
 # list by title, and you can add more by hand on the Player Props page.
 KALSHI_SERIES = {
     "NBA": ["KXNBAPTS", "KXNBAREB", "KXNBAAST", "KXNBA3PT"],
-    "NFL": [], "College football": [], "MLB": [], "NHL": [],
+    "NFL": ["KXNFLRRYDS"], "College football": [], "MLB": [], "NHL": [],
 }
-SERIES_KEYWORD = {"NBA": "nba", "NFL": "nfl", "College football": "college football",
-                  "MLB": "mlb", "NHL": "nhl"}
+# Kalshi titles series "Pro Football ...", "Pro Basketball ..." rather than NFL/NBA.
+LEAGUE_WORDS = {"NBA": ("pro basketball", "nba"), "NFL": ("pro football", "nfl"),
+                "College football": ("college football", "ncaaf"),
+                "MLB": ("pro baseball", "mlb"), "NHL": ("pro hockey", "nhl")}
+
+# Anything that isn't a single-game, full-game player prop.
+NOT_GAME_PROP = ("season", "leader", "lead ", "mvp", "award", "career", "regular season",
+                 "longest", "first half", "1st half", "2nd half", "second half", "1h ", "2h ",
+                 "quarter", "q1", "q2", "q3", "q4", "first 5", "inning", "period")
+MAX_PM_EDGE = 0.15   # bigger gaps are almost always a mismatched or stale market
+MIN_POLY_LIQUIDITY = 100.0
 
 # Phrase in a market's title -> Odds API market key. Checked in order.
 STAT_WORDS = {
@@ -49,6 +58,15 @@ STAT_WORDS = {
             ("save", "player_total_saves"), ("assist", "player_assists"), ("point", "player_points")],
 }
 STAT_WORDS["College football"] = STAT_WORDS["NFL"]
+COMBO_STATS = {
+    "NFL": [("rush and receiving", "player_rush_reception_yds"),
+            ("rushing + receiving", "player_rush_reception_yds"),
+            ("rushing and receiving", "player_rush_reception_yds"),
+            ("rush + rec", "player_rush_reception_yds")],
+    "NBA": [("points + rebounds + assists", "player_points_rebounds_assists"),
+            ("pts + reb + ast", "player_points_rebounds_assists")],
+}
+COMBO_STATS["College football"] = COMBO_STATS["NFL"]
 COMBO_MARKERS = ("+ reb", "+reb", "+ ast", "+ast", "pts+", "pra", "&", " and ")
 
 # Rough game-to-game spread of each stat, as a fraction of the typical line.
@@ -58,6 +76,7 @@ STAT_CV = {
     "player_reception_yds": 0.55, "player_receptions": 0.40, "player_pass_tds": 0.60,
     "pitcher_strikeouts": 0.33, "batter_total_bases": 0.90, "batter_hits": 0.80,
     "player_shots_on_goal": 0.45, "player_total_saves": 0.25,
+    "player_rush_reception_yds": 0.40, "player_points_rebounds_assists": 0.25,
 }
 MIN_LINE_TO_ESTIMATE = 4.5
 KALSHI_FEE = 0.07   # Kalshi taker fee is about 7% x price x (1 - price) per contract
@@ -87,8 +106,16 @@ def match_player(text, players):
     return hits[0] if len(hits) == 1 else None
 
 
+def is_game_prop(text):
+    t = " " + str(text).lower() + " "
+    return not any(w in t for w in NOT_GAME_PROP)
+
+
 def detect_stat(sport, text):
     t = str(text).lower()
+    for word, key in COMBO_STATS.get(sport, []):
+        if word in t:
+            return key
     if any(c in t for c in COMBO_MARKERS):
         return None
     for word, key in STAT_WORDS.get(sport, []):
@@ -121,7 +148,7 @@ def estimate_over_prob(lines, target, market_key):
     means = [l - sd * _N.inv_cdf(1 - p) for l, p in usable]
     mean = sum(means) / len(means)
     nearest = min(abs(target - l) for l, _ in usable)
-    if nearest > 1.25 * sd:
+    if nearest > 0.75 * sd:
         return None, None   # too far from any posted line to trust
     return 1 - _N.cdf((target - mean) / sd), "estimated"
 
@@ -141,10 +168,12 @@ def discover_kalshi_series(sport):
         data = _get(f"{KALSHI}/series", category="Sports")
     except Exception:
         return found
-    kw = SERIES_KEYWORD.get(sport, "")
+    words = LEAGUE_WORDS.get(sport, ())
     for s in data.get("series", []) or []:
         title = str(s.get("title", "")).lower()
-        if kw and kw in title and ("player" in title or "prop" in title) and detect_stat(sport, title):
+        tick = str(s.get("ticker", "")).lower()
+        if (any(w in title for w in words) and detect_stat(sport, title)
+                and is_game_prop(title) and is_game_prop(tick)):
             if s.get("ticker") and s["ticker"] not in found:
                 found.append(s["ticker"])
     return found
@@ -224,8 +253,10 @@ def price_kalshi(sport, markets, consensus_by_game, min_edge):
             continue
         mdate = _kalshi_date(m.get("event_ticker") or m.get("ticker"))
         text = " ".join(str(m.get(k, "")) for k in ("title", "yes_sub_title"))
+        if mdate is None or not is_game_prop(text):
+            continue   # undated markets are season-long, not this game
         for game, info in consensus_by_game.items():
-            if mdate and info.get("date") and mdate != info["date"]:
+            if info.get("date") and mdate != info["date"]:
                 continue
             players = {p for (k, p) in info["lines"] if k == mkey}
             parts = str(m.get("ticker", "")).split("-")
@@ -240,7 +271,7 @@ def price_kalshi(sport, markets, consensus_by_game, min_edge):
                 if not price or not 0 < price < 1:
                     continue
                 edge = p - price - KALSHI_FEE * price * (1 - price)
-                if edge >= min_edge:
+                if min_edge <= edge <= MAX_PM_EDGE:
                     out.append(dict(venue="Kalshi", game=game, player=player, market=mkey,
                                     side="Over" if side == "Yes" else "Under", point=line,
                                     label=f"{'Yes' if side == 'Yes' else 'No'} on {line + 0.5:g}+",
@@ -256,22 +287,36 @@ def poly_prop_markets(series_id):
     if not series_id:
         return []
     try:
-        evs = _get(f"{GAMMA}/events", series_id=series_id, active="true", closed="false", limit=300)
+        now = datetime.now(ET)
+        evs = _get(f"{GAMMA}/events", series_id=series_id, active="true", closed="false",
+                   end_date_min=now.date().isoformat(),
+                   end_date_max=(now + timedelta(days=8)).date().isoformat(), limit=300)
     except Exception:
         return []
     out = []
     for ev in evs or []:
         for m in ev.get("markets") or []:
-            try:
-                outs = m["outcomes"]; prices = m["outcomePrices"]
-                outs = json.loads(outs) if isinstance(outs, str) else outs
-                prices = [float(x) for x in (json.loads(prices) if isinstance(prices, str) else prices)]
-            except Exception:
+            if m.get("closed") or m.get("acceptingOrders") is False:
                 continue
-            if len(outs) == 2 and len(prices) == 2:
-                out.append(dict(question=m.get("question") or m.get("groupItemTitle") or "",
-                                event_title=ev.get("title", ""), outcomes=outs, prices=prices,
-                                end=m.get("endDate") or ev.get("endDate")))
+            try:
+                liq = float(m.get("liquidityNum") or m.get("liquidity") or 0)
+            except (TypeError, ValueError):
+                liq = 0.0
+            if liq < MIN_POLY_LIQUIDITY:
+                continue
+            try:
+                outs = m["outcomes"]
+                outs = json.loads(outs) if isinstance(outs, str) else outs
+                ask, bid = float(m["bestAsk"]), float(m["bestBid"])
+            except Exception:
+                continue   # no live order book, so no reliable price to buy at
+            if len(outs) != 2 or not (0 < bid <= ask < 1):
+                continue
+            # Buying outcome 1 costs its best ask; buying outcome 2 costs 1 - outcome 1's best bid.
+            out.append(dict(question=m.get("question") or m.get("groupItemTitle") or "",
+                            event_title=ev.get("title", ""), outcomes=outs,
+                            prices=[ask, 1 - bid], liquidity=liq,
+                            end=m.get("endDate") or ev.get("endDate")))
     return out
 
 
@@ -291,10 +336,13 @@ def price_poly(sport, markets, consensus_by_game, min_edge):
     out = []
     for m in markets:
         q = m["question"]
+        if not is_game_prop(q) or not is_game_prop(m.get("event_title", "")):
+            continue
         mkey = detect_stat(sport, q)
         line, yes_over = poly_line(q)
         if not mkey or line is None:
             continue
+        end_day = event_date_et(m.get("end"))
         outs = [str(o).lower() for o in m["outcomes"]]
         if set(outs) == {"over", "under"}:
             over_price, under_price = m["prices"][outs.index("over")], m["prices"][outs.index("under")]
@@ -303,7 +351,13 @@ def price_poly(sport, markets, consensus_by_game, min_edge):
             over_price, under_price = (y, n) if yes_over else (n, y)
         else:
             continue
+        context = (m.get("event_title", "") + " " + q).lower()
         for game, info in consensus_by_game.items():
+            teams = [t for t in (info.get("home"), info.get("away")) if t]
+            if teams and not any(t.split()[-1].lower() in context for t in teams):
+                continue   # the market has to name one of this game's teams
+            if end_day and info.get("date") and not (0 <= (end_day - info["date"]).days <= 2):
+                continue   # settles on a different day, so it's a different game
             players = {p for (k, p) in info["lines"] if k == mkey}
             player = match_player(q, players)
             if not player:
@@ -315,7 +369,7 @@ def price_poly(sport, markets, consensus_by_game, min_edge):
                 if not 0 < price < 1:
                     continue
                 edge = p - price
-                if edge >= min_edge:
+                if min_edge <= edge <= MAX_PM_EDGE:
                     out.append(dict(venue="Polymarket", game=game, player=player, market=mkey,
                                     side=side, point=line, label=f"{side} {line:g}", price=price,
                                     model_prob=p, edge=edge, method=how, ticker=""))
